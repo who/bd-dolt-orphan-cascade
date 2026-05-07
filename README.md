@@ -1,4 +1,4 @@
-# bd-locking-bug — minimal repro
+# bd-dolt-orphan-cascade — minimal repro
 
 Reproduces the dolt-server orphan cascade in `bd` v1.0.3.
 
