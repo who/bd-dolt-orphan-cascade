@@ -41,8 +41,8 @@ gastownhall/beads#3392 — same root cause, different framing).
 Requires: `bd` v1.0.3 on `$PATH`, `jq`, GNU coreutils, `pgrep`/`ps`.
 
 ```bash
-git clone https://github.com/who/bd-locking-bug.git
-cd <path-to-cloned-repo>/bd-locking-bug
+git clone https://github.com/who/bd-dolt-orphan-cascade.git
+cd <path-to-cloned-repo>/bd-dolt-orphan-cascade
 bd init                    # creates .beads/
 ./seed.sh                  # creates 5 ready issues so bd has something to query
 ./dump-state.sh            # baseline: should show 1 dolt, all state files present
