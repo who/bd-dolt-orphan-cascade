@@ -1,0 +1,5 @@
+# Beads runtime / database. Re-create with `bd init` after cloning.
+.beads/
+
+# Logs
+*.log
