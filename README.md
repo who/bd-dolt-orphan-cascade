@@ -101,31 +101,57 @@ prefix and are an easy tell.
 
 ## Repro (best-effort)
 
+There are two scripts, mirroring two hypotheses about the trigger.
+
+### Variant A — `repro.sh` (parallel bd calls, including `bd prime`)
+
 ```bash
 ./repro.sh                 # parallel bd loop. ctrl-c to stop.
 ```
 
-In another terminal, watch the state:
+Each round fires `bd prime`, `bd ready`, `bd list`, `bd show` in parallel
+against the same shell. `bd prime` is what the SessionStart/PreCompact
+hooks (configured in `.claude/settings.json`) actually call — running it
+directly here mimics the hook code path without the cost of spinning up
+a real Claude session.
+
+Tunables: `ROUNDS=N PARALLEL=M ./repro.sh`. Defaults: 1000 × 8.
+
+### Variant B — `repro-claude-storm.sh` (real `claude -p` sessions)
+
+```bash
+./repro-claude-storm.sh                    # 20 sessions × 4 parallel
+SESSIONS=50 PARALLEL=8 ./repro-claude-storm.sh
+```
+
+Spawns fresh `claude -p` invocations. Each one boots a Node runtime, sets
+up a bwrap sandbox, fires the SessionStart hook (→ `bd prime` →
+`EnsureRunning` → `IsRunning`), responds to a one-word prompt, and exits.
+This is the closest synthetic equivalent of Ralph's per-iteration pattern.
+
+Costs real Anthropic API tokens — but with a tiny prompt and a small
+session count, the bill is pennies. Use sparingly.
+
+### Watching the state
+
+In another terminal, while either script runs:
 
 ```bash
 watch -n 1 './dump-state.sh'
 ```
 
-What you may see:
+What you may see (from either script):
 
-- **No cascade.** Most likely outcome under synthetic load. The script will
-  count dolts each round; if it stays at 1 with state files present, the
-  bug isn't reproducing right now.
-- **Cross-repo orphan detection.** The script's pre-step kills any
-  pre-existing `dolt sql-server` processes (visible globally) so the count
-  reflects this repo only. If you see a `Killing N pre-existing dolt
-  sql-server process(es)` line, those came from somewhere else (other
-  repos, prior bd usage). That's normal.
-- **Cascade.** The script self-terminates with a `CASCADE DETECTED` line if
+- **No cascade.** Most likely outcome under synthetic load on a quiet
+  machine. If `dolts` stays at 1 with state files present, the bug isn't
+  reproducing right now.
+- **Cross-repo orphan detection.** Both scripts kill pre-existing `dolt
+  sql-server` processes (globally) before starting, so the count reflects
+  this repo only. If you see a `Killing N pre-existing` line, those came
+  from elsewhere — that's normal.
+- **Cascade.** Either script self-terminates with `CASCADE DETECTED` once
   `pgrep -f 'dolt sql-server' | wc -l` exceeds 3. If you hit this, run
   `./dump-state.sh` for a snapshot, then `./cleanup.sh` to recover.
-
-Tunables: `ROUNDS=N PARALLEL=M ./repro.sh`. Defaults are 1000 × 8.
 
 ### If you really want to chase it
 
@@ -135,7 +161,7 @@ The most likely path to a deterministic repro probably involves:
   `bd close`, `bd create`, `bd dolt push`) — not just reads.
 - Many short-lived bd processes spawned in quick succession (Ralph-style
   agent loops, or `bd prime` hooks firing on every Claude Code session
-  start in parallel).
+  start in parallel — that's what Variant B exercises).
 - Either real CPU/memory pressure on the host, or artificial scheduling
   jitter. The trigger is `pgrep` or `ps` returning a transient error or
   empty result, which is hard to provoke deterministically on a quiet
@@ -156,10 +182,14 @@ is self-contained.
 ## Files
 
 - `seed.sh` — creates 5 starter bd issues so `bd ready` returns rows
-- `repro.sh` — parallel bd loop that *attempts to* trigger the cascade
+- `repro.sh` — Variant A: parallel bd loop including `bd prime` (the hook command)
+- `repro-claude-storm.sh` — Variant B: spawns fresh `claude -p` sessions to
+  fire the real SessionStart hook through Claude Code's full lifecycle
 - `dump-state.sh` — one-shot diagnostic snapshot
 - `cleanup.sh` — kill orphans + reset state + restart fresh (validated
   multiple times against the cascade in real Ralph workloads)
+- `.claude/settings.json` — bd-installed SessionStart + PreCompact hooks
+  that fire `bd prime` (this is what makes Variant B faithful)
 
 Nothing else. No application code. The repo exists to demonstrate one bug
 and provide a reliable recovery path for it.

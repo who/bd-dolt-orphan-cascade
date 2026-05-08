@@ -54,7 +54,13 @@ for round in $(seq "$ROUNDS"); do
   printf 'round %4d  dolts=%s  pid=%s  port=%s\n' \
     "$round" "$alive" "$pid_present" "$port_present"
 
+  # Mirror Ralph's pattern: every iteration creates a fresh Claude session
+  # whose SessionStart hook runs `bd prime`. We approximate that here by
+  # firing `bd prime` alongside reads. (The hook itself is in
+  # .claude/settings.json — see also ./repro-claude-storm.sh which spawns
+  # *real* `claude -p` sessions to trigger the hook authentically.)
   for _ in $(seq "$PARALLEL"); do
+    bd prime >/dev/null 2>&1 &
     bd ready >/dev/null 2>&1 &
     bd list  >/dev/null 2>&1 &
     bd show "$TARGET_ID" >/dev/null 2>&1 &
