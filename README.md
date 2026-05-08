@@ -117,17 +117,47 @@ a real Claude session.
 
 Tunables: `ROUNDS=N PARALLEL=M ./repro.sh`. Defaults: 1000 × 8.
 
-### Variant B — `repro-claude-storm.sh` (real `claude -p` sessions)
+### Variant B — `repro-claude-storm.sh` (real `claude -p` sessions, JSONL captured)
 
 ```bash
-./repro-claude-storm.sh                    # 20 sessions × 4 parallel
+./repro-claude-storm.sh                       # 20 sessions × 4 parallel
 SESSIONS=50 PARALLEL=8 ./repro-claude-storm.sh
+FAST_MODE=--fast ./repro-claude-storm.sh      # mirror Ralph's --fast
 ```
 
-Spawns fresh `claude -p` invocations. Each one boots a Node runtime, sets
-up a bwrap sandbox, fires the SessionStart hook (→ `bd prime` →
-`EnsureRunning` → `IsRunning`), responds to a one-word prompt, and exits.
-This is the closest synthetic equivalent of Ralph's per-iteration pattern.
+Spawns fresh `claude -p` invocations using **the same flags Ralph uses**
+(`--output-format stream-json --verbose --dangerously-skip-permissions`).
+Each session's full stream-json output is captured to its own file, so
+hook firings, bd errors, tool calls, and any cascade signals are all
+post-mortem-grep-able.
+
+```
+logs/storm-<timestamp>/
+  session-001.jsonl      # full stream-json from session 1
+  session-002.jsonl      # session 2, etc.
+  summary.txt            # roll-up: per-batch dolt/zombie/state counts
+```
+
+Useful one-liners on the captured logs:
+
+```bash
+# Was the SessionStart hook fired in every session?
+grep -l 'SessionStart' logs/storm-*/session-*.jsonl | wc -l
+
+# How many sessions saw a bd error?
+jq -r 'select(.type == "user")
+       | .message.content[]?
+       | select(.is_error == true)
+       | .content' logs/storm-*/session-*.jsonl | wc -l
+
+# Surface every "Dolt server unreachable" string across sessions
+grep -h 'unreachable' logs/storm-*/session-*.jsonl | head
+```
+
+Each session boots a Node runtime, sets up a bwrap sandbox, fires
+`SessionStart` → `bd prime` → `EnsureRunning` → `IsRunning` (the buggy
+code path), responds to a one-word prompt, exits. Closest synthetic
+equivalent of Ralph's per-iteration pattern.
 
 Costs real Anthropic API tokens — but with a tiny prompt and a small
 session count, the bill is pennies. Use sparingly.

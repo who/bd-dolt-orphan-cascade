@@ -1,6 +1,8 @@
 #!/bin/bash
 # repro-claude-storm.sh - spawn fresh `claude -p` sessions to faithfully
-# reproduce Ralph's session-spawn pattern.
+# reproduce Ralph's session-spawn pattern, with the SAME claude flags Ralph
+# uses (--output-format stream-json --verbose) so each session's JSONL is
+# captured for forensic inspection.
 #
 # Each session does what every Ralph iteration does:
 #   1. Boots a fresh Claude Code process (Node runtime + bwrap sandbox setup)
@@ -16,6 +18,17 @@
 # Usage:
 #   ./repro-claude-storm.sh                    # 20 sessions, 4 parallel
 #   SESSIONS=50 PARALLEL=8 ./repro-claude-storm.sh
+#   FAST_MODE=--fast ./repro-claude-storm.sh   # match Ralph's --fast (premium)
+#
+# Output:
+#   logs/storm-<timestamp>/session-NNN.jsonl   # full stream-json per session
+#   logs/storm-<timestamp>/summary.txt         # roll-up of cascade signals
+#
+# Inspect afterwards with jq, e.g.:
+#   jq -c 'select(.type == "system" and (.subtype // "") | test("hook"))' \
+#     logs/storm-*/session-*.jsonl
+#   jq -c 'select(.type == "user" and (.message.content[]?.is_error == true))' \
+#     logs/storm-*/session-*.jsonl
 #
 # Recovery: ./cleanup.sh
 
@@ -25,24 +38,39 @@ cd "$(dirname "$0")"
 SESSIONS=${SESSIONS:-20}
 PARALLEL=${PARALLEL:-4}
 PROMPT=${PROMPT:-"reply with the single word: done"}
+FAST_MODE=${FAST_MODE:-""}            # set to "--fast" to mirror Ralph --fast
+LOG_DIR=${LOG_DIR:-"logs/storm-$(date '+%Y%m%d-%H%M%S')"}
 
 if ! command -v claude >/dev/null 2>&1; then
   echo "ERROR: 'claude' not on PATH. Install Claude Code first." >&2
   exit 1
 fi
 
+mkdir -p "$LOG_DIR"
+SUMMARY="$LOG_DIR/summary.txt"
+exec 3>"$SUMMARY"
+say() { echo "$@"; echo "$@" >&3; }
+
 # Pre-existing dolt cleanup for clean baseline.
 pre_existing="$(pgrep -f 'dolt sql-server' 2>/dev/null | wc -l)"
 if [ "$pre_existing" -gt 0 ]; then
-  echo "Killing $pre_existing pre-existing dolt sql-server process(es) for clean baseline."
+  say "Killing $pre_existing pre-existing dolt sql-server process(es) for clean baseline."
   pkill -KILL -f 'dolt sql-server' 2>/dev/null || true
   sleep 1
 fi
 
-echo "Storming: $SESSIONS sessions, $PARALLEL in parallel."
-echo "Each session: claude -p '$PROMPT' --dangerously-skip-permissions"
-echo "Recovery: ./cleanup.sh"
-echo
+# Mirror Ralph's claude invocation. Stream-json + verbose lets us grep the
+# logs for hook firings, bd errors, tool calls — same shape as Ralph's logs.
+CLAUDE_FLAGS=(--output-format stream-json --verbose --dangerously-skip-permissions)
+if [ -n "$FAST_MODE" ]; then
+  CLAUDE_FLAGS+=("$FAST_MODE")
+fi
+
+say "Storming: $SESSIONS sessions, $PARALLEL in parallel."
+say "Per-session invocation: claude -p '<prompt>' ${CLAUDE_FLAGS[*]}"
+say "Logs: $LOG_DIR/session-NNN.jsonl"
+say "Recovery: ./cleanup.sh"
+say ""
 
 start="$(date +%s)"
 batches=$(( (SESSIONS + PARALLEL - 1) / PARALLEL ))
@@ -51,31 +79,41 @@ for batch in $(seq 1 "$batches"); do
   alive="$(pgrep -f 'dolt sql-server' 2>/dev/null | wc -l)"
   pid_present="$( [ -f .beads/dolt-server.pid ] && echo Y || echo N )"
   port_present="$( [ -f .beads/dolt-server.port ] && echo Y || echo N )"
-  printf 'batch %2d  dolts=%s  pid=%s  port=%s\n' \
-    "$batch" "$alive" "$pid_present" "$port_present"
+  zombies="$(ps -eo stat,comm | awk '$2 == "bd" && $1 ~ /^Z/' | wc -l)"
+  say "$(printf 'batch %2d  dolts=%s  pid=%s  port=%s  bd-zombies=%s' \
+    "$batch" "$alive" "$pid_present" "$port_present" "$zombies")"
 
   for _ in $(seq 1 "$PARALLEL"); do
     session=$((session + 1))
     if [ "$session" -gt "$SESSIONS" ]; then break; fi
-    timeout 60 claude -p "$PROMPT" --dangerously-skip-permissions </dev/null >/dev/null 2>&1 &
+    log_file="$LOG_DIR/session-$(printf '%03d' "$session").jsonl"
+    timeout 60 claude -p "$PROMPT" "${CLAUDE_FLAGS[@]}" </dev/null \
+      >"$log_file" 2>&1 &
   done
   wait
 
   if [ "$alive" -gt 3 ]; then
     elapsed=$(( $(date +%s) - start ))
-    echo
-    echo "CASCADE DETECTED after ${elapsed}s — ${alive} dolts alive."
-    echo "Run ./dump-state.sh for full picture, then ./cleanup.sh to recover."
+    say ""
+    say "CASCADE DETECTED after ${elapsed}s — ${alive} dolts alive."
+    say "Logs: $LOG_DIR/"
+    say "Run ./dump-state.sh for full picture, then ./cleanup.sh to recover."
     exit 0
   fi
 done
 
 elapsed=$(( $(date +%s) - start ))
 final="$(pgrep -f 'dolt sql-server' 2>/dev/null | wc -l)"
-echo
-echo "Done. ${SESSIONS} sessions completed in ${elapsed}s."
-echo "Final dolt count: ${final}"
+final_zombies="$(ps -eo stat,comm | awk '$2 == "bd" && $1 ~ /^Z/' | wc -l)"
+say ""
+say "Done. ${SESSIONS} sessions completed in ${elapsed}s."
+say "Final dolt count: ${final}, bd zombies: ${final_zombies}"
+say "Logs: $LOG_DIR/"
 if [ "$final" -gt 1 ]; then
-  echo "WARNING: more than 1 dolt alive — possible orphan accumulation."
-  echo "Run ./dump-state.sh, then ./cleanup.sh if needed."
+  say "WARNING: more than 1 dolt alive — possible orphan accumulation."
+  say "Run ./dump-state.sh, then ./cleanup.sh if needed."
+fi
+if [ "$final_zombies" -gt 0 ]; then
+  say "WARNING: $final_zombies bd zombies left over — likely from sessions"
+  say "         whose parents got SIGSTOP'd or died ungracefully."
 fi
