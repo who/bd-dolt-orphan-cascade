@@ -10,7 +10,9 @@
 #   3. Clear stale /tmp/beads-circuit/*.json files.
 #   4. NEVER touch .beads/dolt/.dolt/noms/LOCK or any other dolt-internal
 #      file (gastownhall/beads#2933).
-#   5. Run `bd dolt start` and verify.
+#   5. In server mode: run `bd dolt start` and verify.
+#      In embedded mode: skip — `bd dolt start` errors with
+#      "not supported in embedded mode (no Dolt server)".
 
 set -e
 cd "$(dirname "$0")"
@@ -32,8 +34,17 @@ if compgen -G "/tmp/beads-circuit/*.json" >/dev/null 2>&1; then
   echo "Cleared /tmp/beads-circuit/*.json"
 fi
 
-echo "Starting fresh dolt..."
-bd dolt start 2>&1 | sed 's/^/  /'
+# Detect mode from `bd dolt status`. Embedded mode prints
+# "Dolt engine: embedded (in-process, no server)" and `bd dolt start`
+# errors out — skip the start step.
+mode_status="$(bd dolt status 2>&1 || true)"
+if echo "$mode_status" | grep -q 'embedded'; then
+  echo "Embedded mode detected — skipping 'bd dolt start' (not supported in embedded)."
+else
+  echo "Starting fresh dolt..."
+  bd dolt start 2>&1 | sed 's/^/  /'
+fi
+
 echo
 echo "Final state:"
 "$(dirname "$0")/dump-state.sh"

@@ -10,7 +10,9 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') ==="
 echo
 echo "dolt sql-server processes:"
 pgrep -af 'dolt sql-server' 2>/dev/null | grep -v 'pgrep\|/bin/bash -c' || echo "  (none)"
-echo "  count: $(pgrep -cf 'dolt sql-server' 2>/dev/null || echo 0)"
+# Use pipe-to-wc for the count: pgrep -c exits 1 when count is 0, which
+# trips up `|| echo 0` (it appends a second line).
+echo "  count: $(pgrep -f 'dolt sql-server' 2>/dev/null | wc -l)"
 echo
 
 echo "bd-owned state files:"
